@@ -8,13 +8,11 @@ from .utils import encrypt, decrypt, urlsafe_base64, decode_bundle
 from rxconfig import config
 import html
 
-
 class Channel(rx.Base):
     id: str
     name: str
     tags: List[str]
     logo: str | None
-
 
 class StepDaddy:
     def __init__(self):
@@ -23,7 +21,9 @@ class StepDaddy:
             self._session = AsyncSession(proxy="socks5://" + socks5)
         else:
             self._session = AsyncSession()
-        self._base_url = "https://dlhd.link"
+        
+        # Use daddylive.sx as the most stable base URL
+        self._base_url = "https://daddylive.sx"
         self.channels = []
         with open("StepDaddyLiveHD/meta.json", "r") as f:
             self._meta = json.load(f)
@@ -42,27 +42,25 @@ class StepDaddy:
     async def load_channels(self):
         channels = []
         try:
-            # The API usually provides a cleaner list than the .php page
+            # Using the API for more reliable channel loading
             response = await self._session.get(f"{self._base_url}/api.php?type=channels", headers=self._headers())
-            data = response.json()
-        
-            for item in data:
-                channel_name = item.get("name", "Unknown")
-                channel_id = item.get("id")
-                # Logic for logo and tags remains the same
-                meta = self._meta.get(channel_name, {})
-                logo = meta.get("logo", "")
-                if logo:
-                    logo = f"{config.api_url}/logo/{urlsafe_base64(logo)}"
-            
-                channels.append(Channel(id=str(channel_id), name=channel_name, tags=meta.get("tags", []), logo=logo))
-        except Exception as e:
-            print(f"API Error: {e}")
+            if response.status_code == 200 and response.text.strip().startswith('['):
+                data = response.json()
+                for item in data:
+                    channel_name = html.unescape(item.get("name", "Unknown")).replace("#", "")
+                    channel_id = item.get("id")
+                    meta = self._meta.get("18+" if channel_name.startswith("18+") else channel_name, {})
+                    logo = meta.get("logo", "")
+                    if logo:
+                        logo = f"{config.api_url}/logo/{urlsafe_base64(logo)}"
+                    channels.append(Channel(id=str(channel_id), name=channel_name, tags=meta.get("tags", []), logo=logo))
+        except Exception:
+            pass
         finally:
-            self.channels = sorted(channels, key=lambda c: (c.name.startswith("18"), c.name))
+            self.channels = sorted(channels, key=lambda channel: (channel.name.startswith("18"), channel.name))
 
     async def stream(self, channel_id: str):
-        # 1. Use the API to get the direct stream info
+        # Using the API to get the stream URL directly
         api_url = f"{self._base_url}/api.php?type=get_stream&id={channel_id}"
         response = await self._session.get(api_url, headers=self._headers())
         
@@ -70,29 +68,29 @@ class StepDaddy:
             raise ValueError("API failed to return stream data")
 
         data = response.json()
-        # The API usually returns the direct .m3u8 link in the 'url' field
-        server_url = data.get("url") 
+        server_url = data.get("url")
         
         if not server_url:
             raise ValueError("No stream URL found in API response")
 
-        # 2. Fetch the actual M3U8 manifest
-        m3u8 = await self._session.get(server_url, headers=self._headers())
+        m3u8 = await self._session.get(server_url, headers=self._headers(quote(str(server_url))))
         m3u8_data = ""
-        
         for line in m3u8.text.split("\n"):
-            # We proxy the KEY because CDNs check Referer/Origin
             if line.startswith("#EXT-X-KEY:"):
                 original_url = re.search(r'URI="(.*?)"', line).group(1)
                 line = line.replace(original_url, f"{config.api_url}/key/{encrypt(original_url)}/{encrypt(urlparse(server_url).netloc)}")
-            
-            # Only proxy full content segments if PROXY_CONTENT is True in Docker
             elif line.startswith("http") and config.proxy_content:
                 line = f"{config.api_url}/content/{encrypt(line)}"
-                
             m3u8_data += line + "\n"
-            
         return m3u8_data
+
+    async def key(self, url: str, host: str):
+        url = decrypt(url)
+        host = decrypt(host)
+        response = await self._session.get(url, headers=self._headers(f"{host}/", host), timeout=60)
+        if response.status_code != 200:
+            raise Exception(f"Failed to get key")
+        return response.content
 
     @staticmethod
     def content_url(path: str):
@@ -106,10 +104,10 @@ class StepDaddy:
         return data
 
     async def schedule(self):
-    try:
-        response = await self._session.get(f"{self._base_url}/api.php?type=schedule", headers=self._headers())
-        if response.status_code == 200:
-            return response.json()
-        return {}
-    except:
-        return {}
+        try:
+            response = await self._session.get(f"{self._base_url}/api.php?type=schedule", headers=self._headers())
+            if response.status_code == 200 and response.text.strip().startswith('{'):
+                return response.json()
+            return {}
+        except Exception:
+            return {}
