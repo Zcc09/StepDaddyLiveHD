@@ -75,7 +75,11 @@ def playlist():
 
 
 async def get_schedule():
-    return await step_daddy.schedule()
+
+    res = await step_daddy.schedule()
+    if not isinstance(res, dict):
+        return {}
+    return res
 
 
 @fastapi_app.get("/logo/{logo}")
