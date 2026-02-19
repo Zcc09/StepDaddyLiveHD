@@ -32,13 +32,21 @@ class ScheduleState(rx.State):
         if isinstance(channels, list):
             for channel in channels:
                 try:
-                    channel_list.append(ChannelItem(name=channel["channel_name"], id=channel["channel_id"]))
+                    # Fix: API uses 'channel_id' and 'channel_name'
+                    c_id = channel.get("channel_id") or channel.get("id")
+                    c_name = channel.get("channel_name") or channel.get("name")
+                    if c_id and c_name:
+                        channel_list.append(ChannelItem(name=c_name, id=str(c_id)))
                 except:
                     continue
         elif isinstance(channels, dict):
-            for channel_dic in channels:
+            for key in channels:
                 try:
-                    channel_list.append(ChannelItem(name=channels[channel_dic]["channel_name"], id=channels[channel_dic]["channel_id"]))
+                    channel = channels[key]
+                    c_id = channel.get("channel_id") or channel.get("id")
+                    c_name = channel.get("channel_name") or channel.get("name")
+                    if c_id and c_name:
+                        channel_list.append(ChannelItem(name=c_name, id=str(c_id)))
                 except:
                     continue
         return channel_list
