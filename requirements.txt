@@ -3,3 +3,5 @@ curl-cffi==0.13.0
 httpx[http2]==0.28.1
 python-dateutil==2.9.0
 fastapi==0.118.0
+pydantic>=2.7.0,<2.11.0
+sqlmodel>=0.0.24,<0.0.30
