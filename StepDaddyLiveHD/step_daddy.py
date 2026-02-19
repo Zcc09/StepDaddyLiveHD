@@ -62,32 +62,37 @@ class StepDaddy:
             self.channels = sorted(channels, key=lambda c: (c.name.startswith("18"), c.name))
 
     async def stream(self, channel_id: str):
-
-    api_url = f"{self._base_url}/api.php?type=get_stream&id={channel_id}"
-    response = await self._session.get(api_url, headers=self._headers())
-    
-    if response.status_code != 200:
-        raise ValueError("API failed to return stream data")
-
-    data = response.json()
-    server_url = data.get("url") 
-    
-    m3u8 = await self._session.get(server_url, headers=self._headers())
-    m3u8_data = ""
-    
-    for line in m3u8.text.split("\n"):
-
-        if line.startswith("#EXT-X-KEY:"):
-            original_url = re.search(r'URI="(.*?)"', line).group(1)
-
-            line = line.replace(original_url, f"{config.api_url}/key/{encrypt(original_url)}/{encrypt(urlparse(server_url).netloc)}")
+        # 1. Use the API to get the direct stream info
+        api_url = f"{self._base_url}/api.php?type=get_stream&id={channel_id}"
+        response = await self._session.get(api_url, headers=self._headers())
         
-        elif line.startswith("http") and config.proxy_content:
-            line = f"{config.api_url}/content/{encrypt(line)}"
+        if response.status_code != 200:
+            raise ValueError("API failed to return stream data")
+
+        data = response.json()
+        # The API usually returns the direct .m3u8 link in the 'url' field
+        server_url = data.get("url") 
+        
+        if not server_url:
+            raise ValueError("No stream URL found in API response")
+
+        # 2. Fetch the actual M3U8 manifest
+        m3u8 = await self._session.get(server_url, headers=self._headers())
+        m3u8_data = ""
+        
+        for line in m3u8.text.split("\n"):
+            # We proxy the KEY because CDNs check Referer/Origin
+            if line.startswith("#EXT-X-KEY:"):
+                original_url = re.search(r'URI="(.*?)"', line).group(1)
+                line = line.replace(original_url, f"{config.api_url}/key/{encrypt(original_url)}/{encrypt(urlparse(server_url).netloc)}")
             
-        m3u8_data += line + "\n"
-        
-    return m3u8_data
+            # Only proxy full content segments if PROXY_CONTENT is True in Docker
+            elif line.startswith("http") and config.proxy_content:
+                line = f"{config.api_url}/content/{encrypt(line)}"
+                
+            m3u8_data += line + "\n"
+            
+        return m3u8_data
 
     @staticmethod
     def content_url(path: str):
