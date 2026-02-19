@@ -19,11 +19,8 @@ COPY requirements.txt .
 RUN pip install --upgrade pip
 RUN pip install -r requirements.txt
 
-# --- CRITICAL FIX START ---
-# Force downgrade Pydantic and SQLModel to versions compatible with Reflex 0.8.13
-# This avoids the 'PydanticDeprecatedSince211' error
-RUN pip install "pydantic<2.11.0" "sqlmodel<=0.0.22" "reflex==0.8.13"
-# --- CRITICAL FIX END ---
+RUN pip install "pydantic>=2.7.0,<2.11.0" "sqlmodel>=0.0.24,<0.0.30" "reflex==0.8.13"
+
 
 COPY rxconfig.py ./
 RUN reflex init
