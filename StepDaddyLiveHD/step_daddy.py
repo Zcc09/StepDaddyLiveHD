@@ -42,72 +42,52 @@ class StepDaddy:
     async def load_channels(self):
         channels = []
         try:
-            response = await self._session.get(f"{self._base_url}/24-7-channels.php", headers=self._headers())
-            matches = re.findall(
-                r'<a class="card"\s+href="/watch\.php\?id=(\d+)"[^>]*>\s*<div class="card__title">(.*?)</div>',
-                response.text,
-                re.DOTALL
-            )
-            for channel_id, channel_name in matches:
-                channel_name = html.unescape(channel_name.strip()).replace("#", "")
-                meta = self._meta.get("18+" if channel_name.startswith("18+") else channel_name, {})
+            # The API usually provides a cleaner list than the .php page
+            response = await self._session.get(f"{self._base_url}/api.php?type=channels", headers=self._headers())
+            data = response.json()
+        
+            for item in data:
+                channel_name = item.get("name", "Unknown")
+                channel_id = item.get("id")
+                # Logic for logo and tags remains the same
+                meta = self._meta.get(channel_name, {})
                 logo = meta.get("logo", "")
                 if logo:
                     logo = f"{config.api_url}/logo/{urlsafe_base64(logo)}"
-                channels.append(Channel(id=channel_id, name=channel_name, tags=meta.get("tags", []), logo=logo))
+            
+                channels.append(Channel(id=str(channel_id), name=channel_name, tags=meta.get("tags", []), logo=logo))
+        except Exception as e:
+            print(f"API Error: {e}")
         finally:
-            self.channels = sorted(channels, key=lambda channel: (channel.name.startswith("18"), channel.name))
+            self.channels = sorted(channels, key=lambda c: (c.name.startswith("18"), c.name))
 
     async def stream(self, channel_id: str):
-        key = "CHANNEL_KEY"
-        url = f"{self._base_url}/stream/stream-{channel_id}.php"
-        response = await self._session.get(url, headers=self._headers())
-        matches = re.compile("iframe src=\"(.*)\" width").findall(response.text)
-        if matches:
-            source_url = matches[0]
-            source_response = await self._session.get(source_url, headers=self._headers(url))
-        else:
-            raise ValueError("Failed to find source URL for channel")
 
-        channel_key = re.compile(rf"const\s+{re.escape(key)}\s*=\s*\"(.*?)\";").findall(source_response.text)[-1]
+    api_url = f"{self._base_url}/api.php?type=get_stream&id={channel_id}"
+    response = await self._session.get(api_url, headers=self._headers())
+    
+    if response.status_code != 200:
+        raise ValueError("API failed to return stream data")
 
-        data = decode_bundle(source_response.text)
-        auth_ts = data.get("b_ts", "")
-        auth_sig = data.get("b_sig", "")
-        auth_rnd = data.get("b_rnd", "")
-        auth_url = data.get("b_host", "")
-        auth_request_url = f"{auth_url}auth.php?channel_id={channel_key}&ts={auth_ts}&rnd={auth_rnd}&sig={auth_sig}"
-        auth_response = await self._session.get(auth_request_url, headers=self._headers(source_url))
-        if auth_response.status_code != 200:
-            raise ValueError("Failed to get auth response")
-        key_url = urlparse(source_url)
-        key_url = f"{key_url.scheme}://{key_url.netloc}/server_lookup.php?channel_id={channel_key}"
-        key_response = await self._session.get(key_url, headers=self._headers(source_url))
-        server_key = key_response.json().get("server_key")
-        if not server_key:
-            raise ValueError("No server key found in response")
-        if server_key == "top1/cdn":
-            server_url = f"https://top1.newkso.ru/top1/cdn/{channel_key}/mono.m3u8"
-        else:
-            server_url = f"https://{server_key}new.newkso.ru/{server_key}/{channel_key}/mono.m3u8"
-        m3u8 = await self._session.get(server_url, headers=self._headers(quote(str(source_url))))
-        m3u8_data = ""
-        for line in m3u8.text.split("\n"):
-            if line.startswith("#EXT-X-KEY:"):
-                original_url = re.search(r'URI="(.*?)"', line).group(1)
-                line = line.replace(original_url, f"{config.api_url}/key/{encrypt(original_url)}/{encrypt(urlparse(source_url).netloc)}")
-            elif line.startswith("http") and config.proxy_content:
-                line = f"{config.api_url}/content/{encrypt(line)}"
-            m3u8_data += line + "\n"
-        return m3u8_data
+    data = response.json()
+    server_url = data.get("url") 
+    
+    m3u8 = await self._session.get(server_url, headers=self._headers())
+    m3u8_data = ""
+    
+    for line in m3u8.text.split("\n"):
 
-    async def key(self, url: str, host: str):
-        url = decrypt(url)
-        host = decrypt(host)
-        response = await self._session.get(url, headers=self._headers(f"{host}/", host), timeout=60)
-        if response.status_code != 200:
-            raise Exception(f"Failed to get key")
-        return response.content
+        if line.startswith("#EXT-X-KEY:"):
+            original_url = re.search(r'URI="(.*?)"', line).group(1)
+
+            line = line.replace(original_url, f"{config.api_url}/key/{encrypt(original_url)}/{encrypt(urlparse(server_url).netloc)}")
+        
+        elif line.startswith("http") and config.proxy_content:
+            line = f"{config.api_url}/content/{encrypt(line)}"
+            
+        m3u8_data += line + "\n"
+        
+    return m3u8_data
 
     @staticmethod
     def content_url(path: str):
@@ -121,5 +101,10 @@ class StepDaddy:
         return data
 
     async def schedule(self):
-        response = await self._session.get(f"{self._base_url}/schedule/schedule-generated.php", headers=self._headers())
-        return response.json()
+    try:
+        response = await self._session.get(f"{self._base_url}/api.php?type=schedule", headers=self._headers())
+        if response.status_code == 200:
+            return response.json()
+        return {}
+    except:
+        return {}
